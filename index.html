@@ -9508,7 +9508,9 @@ function initPages(){
 </div>
 
 <!-- SUPABASE SDK -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">// ════════════════════════════════════════════════════════
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>// ════════════════════════════════════════════════════════
 // SUPABASE INTEGRATION - MA STUFF v19
 // ════════════════════════════════════════════════════════
 
@@ -9561,10 +9563,13 @@ function hideAuthScreen(){
 }
 
 async function loginWithGoogle(){
-  if(!supabase) return;
-  var btn = document.getElementById('googleLoginBtn');
+  if(!supabase){
+    showToast('Cargando servicio... intenta de nuevo en 2 segundos','error');
+    return;
+  }
+  var btn = document.getElementById('vidaGoogleBtn') || document.getElementById('googleLoginBtn');
   if(btn){
-    btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 48 48" style="animation:planSpin 1s linear infinite"><circle cx="24" cy="24" r="20" fill="none" stroke="#4285F4" stroke-width="4" stroke-dasharray="80 40"/></svg> Conectando con Google...';
+    btn.textContent = 'Conectando...';
     btn.style.opacity = '0.8';
   }
   try{
