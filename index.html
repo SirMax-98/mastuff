@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>MA STUFF</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700;900&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -4374,7 +4375,18 @@ window.onload=()=>{
   try{ initPremiumNav(); }catch(e){}
   try{ initPages(); }catch(e){}
   setTimeout(function(){ try{ updateVidaPage(); }catch(e){}; }, 300);
-  setTimeout(function(){ try{ if(typeof initSupabase==='function') initSupabase(); }catch(e){ console.warn('supabase:',e); } }, 500);
+  // Retry Supabase init until SDK loads
+  var sbRetry = 0;
+  var sbInterval = setInterval(function(){
+    sbRetry++;
+    if(window.supabase && typeof initSupabase==='function'){
+      clearInterval(sbInterval);
+      try{ initSupabase(); }catch(e){ console.warn('supabase:',e); }
+    } else if(sbRetry > 20){
+      clearInterval(sbInterval);
+      console.warn('Supabase SDK failed to load');
+    }
+  }, 300);
   // Auto-load AI motivation after DOM is fully ready
   setTimeout(()=>{
     try{
@@ -9633,7 +9645,6 @@ function initPages(){
 
 <!-- SUPABASE SDK -->
 </script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>// ════════════════════════════════════════════════════════
 // SUPABASE INTEGRATION - MA STUFF v19
 // ════════════════════════════════════════════════════════
@@ -9646,6 +9657,7 @@ var currentUser = null;
 
 function initSupabase(){
   try{
+    if(!window.supabase){ throw new Error('Supabase SDK not loaded'); }
     supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     // Check if already logged in
     supabase.auth.getSession().then(function(res){
@@ -9891,8 +9903,8 @@ function updateVidaPage(){
   var el2 = document.getElementById('vidaStatRacha');
   var el3 = document.getElementById('vidaStatKarma');
   if(el1) el1.textContent = completed;
-  if(el2) el2.textContent = (streak||0) + '\uD83D\uDD25';
-  if(el3) el3.textContent = karmaPoints || 0;
+  if(el2) el2.textContent = (typeof streak!=='undefined'?streak:0) + '\uD83D\uDD25';
+  if(el3) el3.textContent = (karmaData&&karmaData.score||0);
 
   // Heatmap
   buildVidaHeatmap();
