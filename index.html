@@ -5943,28 +5943,13 @@ function switchAITab(){}
 // even before the Supabase script loads
 
 function loginWithGoogle(){
-  if(typeof supabase === 'undefined' || !supabase){
-    showToast('Iniciando... toca de nuevo en un momento', 'info');
-    setTimeout(loginWithGoogle, 1500);
-    return;
-  }
+  // Direct OAuth redirect - no SDK needed
+  var redirectTo = encodeURIComponent('https://sirmax-98.github.io/mastuff/');
+  var oauthUrl = 'https://lzlyxdwetwqmitqqfkpr.supabase.co/auth/v1/authorize?provider=google&redirect_to=' + redirectTo;
   var btn = document.getElementById('vidaGoogleBtn') || document.getElementById('googleLoginBtn');
-  if(btn){ btn.textContent = 'Abriendo Google...'; btn.style.opacity = '0.8'; }
-  supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: 'https://sirmax-98.github.io/mastuff/',
-      queryParams: { access_type: 'offline', prompt: 'consent' }
-    }
-  }).then(function(result){
-    if(result.error){
-      showToast('Error: ' + result.error.message, 'error');
-      if(btn){ btn.textContent = 'Continuar con Google'; btn.style.opacity = '1'; }
-    }
-  }).catch(function(e){
-    showToast('Error de conexion', 'error');
-    if(btn){ btn.textContent = 'Continuar con Google'; btn.style.opacity = '1'; }
-  });
+  if(btn){ btn.textContent = 'Abriendo Google...'; }
+  showToast('Redirigiendo a Google...', 'info');
+  setTimeout(function(){ window.location.href = oauthUrl; }, 500);
 }
 
 function _sb_toggleVidaEmailForm(){
