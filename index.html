@@ -152,12 +152,19 @@
 function initSupabase(){
   try{
     supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    // Check for pending OAuth session
-    if(window._pendingSession && window._pendingSession.user){
-      onUserLoggedIn(window._pendingSession.user);
-      window._pendingSession = null;
-      return;
+    // Check for pending OAuth session (may still be loading from fetch)
+    function checkPendingSession(attempt){
+      if(window._pendingSession && window._pendingSession.user){
+        onUserLoggedIn(window._pendingSession.user);
+        window._pendingSession = null;
+        return true;
+      }
+      // Retry up to 5 times (fetch may still be loading)
+      if(attempt < 5) setTimeout(function(){ checkPendingSession(attempt+1); }, 400);
+      else initAppWithoutAuth();
+      return false;
     }
+    if(!checkPendingSession(0)) return;
     supabase.auth.getSession().then(function(res){
       var session = res.data && res.data.session;
       if(session && session.user){
@@ -9877,26 +9884,49 @@ function skipAuth(){
   initAppWithoutAuth();
 }
 
-// DETECT OAUTH CALLBACK
+// DETECT OAUTH CALLBACK — check hash, query params, and stored session
 (function(){
-  var hash = window.location.hash;
-  if(hash && hash.includes('access_token')){
+  // Check URL hash for token
+  var src = window.location.hash || window.location.search;
+  var raw = src.replace(/^[#?]/,'');
+  if(raw && raw.includes('access_token')){
     var params = {};
-    hash.slice(1).split('&').forEach(function(p){
+    raw.split('&').forEach(function(p){
       var i=p.indexOf('='); if(i>0) params[p.slice(0,i)]=decodeURIComponent(p.slice(i+1));
     });
     if(params.access_token){
-      localStorage.setItem('sb-access-token', params.access_token);
       history.replaceState({}, document.title, window.location.pathname);
+      // Fetch user info
       fetch('https://lzlyxdwetwqmitqqfkpr.supabase.co/auth/v1/user',{
-        headers:{'apikey':'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-','Authorization':'Bearer '+params.access_token}
-      }).then(function(r){return r.json();}).then(function(user){
-        if(user && user.email){
-          window._pendingSession={access_token:params.access_token,user:user};
-          localStorage.setItem('sb-session',JSON.stringify(window._pendingSession));
+        headers:{
+          'apikey':'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-',
+          'Authorization':'Bearer '+params.access_token
         }
-      }).catch(function(e){console.warn('OAuth callback:',e);});
+      }).then(function(r){ return r.json(); }).then(function(user){
+        if(user && user.email){
+          var provider = params.provider_token ? 'google' : 'email';
+          var session = {
+            access_token: params.access_token,
+            refresh_token: params.refresh_token||'',
+            provider: provider,
+            user: user
+          };
+          window._pendingSession = session;
+          localStorage.setItem('sb-session', JSON.stringify(session));
+        }
+      }).catch(function(e){ console.warn('OAuth callback error:', e); });
     }
+  } else {
+    // Check localStorage for existing session
+    try{
+      var stored = localStorage.getItem('sb-session');
+      if(stored){
+        var sess = JSON.parse(stored);
+        if(sess && sess.user && sess.access_token){
+          window._pendingSession = sess;
+        }
+      }
+    }catch(e){}
   }
 })();
 
@@ -9911,6 +9941,18 @@ async function onUserLoggedIn(user){
   hideAuthScreen();
   localStorage.setItem('msAuthDone','1');
   localStorage.removeItem('msAuthSkipped');
+  
+  // Show welcome toast
+  var name = (user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) || user.email || 'usuario';
+  var firstName = name.split(' ')[0];
+  setTimeout(function(){ showToast('Bienvenido ' + firstName + '! ✨', 'fun'); }, 500);
+  
+  // Detect provider
+  var provider = 'email';
+  if(user.app_metadata && user.app_metadata.provider) provider = user.app_metadata.provider;
+  else if(user.identities && user.identities[0]) provider = user.identities[0].provider;
+  else if(window._pendingSession && window._pendingSession.provider) provider = window._pendingSession.provider;
+  localStorage.setItem('msAuthProvider', provider);
 
   // Load profile from Supabase
   try{
