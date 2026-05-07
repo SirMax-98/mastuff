@@ -2568,65 +2568,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   max-width:600px;
 }
 
-/* SAMSUNG A56 OPTIMIZATIONS — 393px viewport */
+/* MOBILE OPTIMIZATIONS */
 :root{
   --safe-bottom: env(safe-area-inset-bottom, 12px);
   --safe-top: env(safe-area-inset-top, 0px);
 }
-
-/* Force app to always look like a phone */
-body{
-  max-width: 480px;
-  margin: 0 auto;
-  position: relative;
-  min-height: 100vh;
-  overflow-x: hidden;
-}
-
-/* On desktop, show phone frame */
-@media(min-width: 481px){
-  body{
-    background: #030810 !important;
-    box-shadow: 0 0 60px rgba(0,0,0,0.8), 0 0 0 1px rgba(212,175,106,0.1);
-  }
-}
-
-/* Topbar fixed to phone width */
-.topbar{
-  max-width: 480px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-}
-
-/* Bottom nav fixed to phone width */
-#bottomNav{
-  max-width: 480px !important;
-  left: 50% !important;
-  transform: translateX(-50%) !important;
-  width: 100% !important;
-}
-
-/* Sidebar also constrained */
-.sidebar{
-  max-width: 300px;
-}
-
-/* Pages wrapper full width within body */
-.pages-wrapper{
-  width: 100% !important;
-}
-
-/* Font sizes optimized for A56 */
-.page-title{ font-size: 1.4rem; }
-.plan-day-btn-title{ font-size: 0.95rem; }
-.bottom-nav-item .nav-label{ font-size: 0.6rem; }
-
-/* Touch targets minimum 48px */
-button, .bottom-nav-item{ min-height: 44px; }
-
-/* Status bar spacing */
-.topbar{ padding-top: calc(8px + var(--safe-top)); }
 </style>
 </head>
 <body style="padding-bottom:90px;">
@@ -4382,7 +4328,7 @@ window.onload=()=>{
     if(window.supabase && typeof initSupabase==='function'){
       clearInterval(sbInterval);
       try{ initSupabase(); }catch(e){ console.warn('supabase:',e); }
-    } else if(sbRetry > 20){
+    } else if(sbRetry > 30){
       clearInterval(sbInterval);
       console.warn('Supabase SDK failed to load');
     }
@@ -5836,7 +5782,8 @@ function switchAITab(){}
 
 function loginWithGoogle(){
   if(typeof supabase === 'undefined' || !supabase){
-    showToast('Cargando... intenta en 2 segundos', 'error');
+    showToast('Iniciando... toca de nuevo en un momento', 'info');
+    setTimeout(loginWithGoogle, 1500);
     return;
   }
   var btn = document.getElementById('vidaGoogleBtn') || document.getElementById('googleLoginBtn');
