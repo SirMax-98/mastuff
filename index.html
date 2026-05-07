@@ -2,7 +2,180 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+// Minimal Supabase Auth Client - replaces full SDK
+// Only implements what MA STUFF needs: signInWithOAuth, signInWithPassword, signUp, signOut, getSession, onAuthStateChange
+
+(function(global){
+  'use strict';
+
+  function createClient(supabaseUrl, supabaseKey){
+    var authUrl = supabaseUrl + '/auth/v1';
+    var headers = {
+      'apikey': supabaseKey,
+      'Content-Type': 'application/json'
+    };
+    var authStateListeners = [];
+    var currentSession = null;
+
+    // Load session from storage
+    try{
+      var stored = localStorage.getItem('sb-session');
+      if(stored) currentSession = JSON.parse(stored);
+    }catch(e){}
+
+    function saveSession(session){
+      currentSession = session;
+      try{
+        if(session) localStorage.setItem('sb-session', JSON.stringify(session));
+        else localStorage.removeItem('sb-session');
+      }catch(e){}
+      authStateListeners.forEach(function(fn){
+        fn(session ? 'SIGNED_IN' : 'SIGNED_OUT', session);
+      });
+    }
+
+    var auth = {
+      getSession: function(){
+        return Promise.resolve({ data: { session: currentSession }, error: null });
+      },
+
+      onAuthStateChange: function(callback){
+        authStateListeners.push(callback);
+        // Check URL for OAuth callback
+        var hash = window.location.hash;
+        if(hash && hash.includes('access_token')){
+          var params = {};
+          hash.slice(1).split('&').forEach(function(p){
+            var parts = p.split('=');
+            params[parts[0]] = decodeURIComponent(parts[1]||'');
+          });
+          if(params.access_token){
+            fetch(authUrl + '/user', {
+              headers: Object.assign({}, headers, {'Authorization': 'Bearer ' + params.access_token})
+            }).then(function(r){ return r.json(); }).then(function(user){
+              var session = {
+                access_token: params.access_token,
+                refresh_token: params.refresh_token || '',
+                user: user
+              };
+              saveSession(session);
+              // Clean URL
+              history.replaceState({}, document.title, window.location.pathname);
+            }).catch(function(e){ console.warn('Session error:', e); });
+          }
+        }
+        return { data: { subscription: { unsubscribe: function(){} } } };
+      },
+
+      signInWithOAuth: function(options){
+        // Build Google OAuth URL via Supabase
+        var provider = options.provider;
+        var redirectTo = encodeURIComponent(options.options && options.options.redirectTo || window.location.href);
+        var oauthUrl = authUrl + '/authorize?provider=' + provider + '&redirect_to=' + redirectTo;
+        window.location.href = oauthUrl;
+        return Promise.resolve({ data: {}, error: null });
+      },
+
+      signInWithPassword: function(credentials){
+        return fetch(authUrl + '/token?grant_type=password', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ email: credentials.email, password: credentials.password })
+        }).then(function(r){ return r.json(); }).then(function(data){
+          if(data.error) return { data: null, error: data };
+          saveSession(data);
+          return { data: data, error: null };
+        });
+      },
+
+      signUp: function(credentials){
+        return fetch(authUrl + '/signup', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ email: credentials.email, password: credentials.password })
+        }).then(function(r){ return r.json(); }).then(function(data){
+          if(data.error) return { data: null, error: data };
+          return { data: data, error: null };
+        });
+      },
+
+      signOut: function(){
+        if(!currentSession) return Promise.resolve({ error: null });
+        var token = currentSession.access_token;
+        saveSession(null);
+        return fetch(authUrl + '/logout', {
+          method: 'POST',
+          headers: Object.assign({}, headers, {'Authorization': 'Bearer ' + token})
+        }).then(function(){ return { error: null }; }).catch(function(){ return { error: null }; });
+      }
+    };
+
+    // Minimal database client
+    function from(table){
+      var dbUrl = supabaseUrl + '/rest/v1/' + table;
+      var token = currentSession && currentSession.access_token || supabaseKey;
+      var dbHeaders = Object.assign({}, headers, {
+        'Authorization': 'Bearer ' + token,
+        'Prefer': 'return=representation'
+      });
+      var query = { filters: [], select: '*' };
+      var obj = {
+        select: function(cols){ query.select = cols||'*'; return obj; },
+        eq: function(col, val){ query.filters.push(col + '=eq.' + val); return obj; },
+        single: function(){
+          var url = dbUrl + '?select=' + query.select + (query.filters.length?'&'+query.filters.join('&'):'');
+          return fetch(url, { headers: Object.assign({}, dbHeaders, {'Accept': 'application/vnd.pgrst.object+json'}) })
+            .then(function(r){ return r.json(); })
+            .then(function(d){ return { data: d, error: null }; })
+            .catch(function(e){ return { data: null, error: e }; });
+        },
+        upsert: function(data, opts){
+          var url = dbUrl;
+          var h = Object.assign({}, dbHeaders, {'Prefer': 'resolution=merge-duplicates,return=minimal'});
+          return fetch(url, { method: 'POST', headers: h, body: JSON.stringify(data) })
+            .then(function(r){ return { data: null, error: r.ok ? null : { message: r.status } }; })
+            .catch(function(e){ return { data: null, error: e }; });
+        }
+      };
+      return obj;
+    }
+
+    return { auth: auth, from: from };
+  }
+
+  global.supabase = { createClient: createClient };
+})(window);
+
+
+
+function initSupabase(){
+  try{
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    supabase.auth.getSession().then(function(res){
+      var session = res.data && res.data.session;
+      if(session && session.user){
+        onUserLoggedIn(session.user);
+      } else {
+        initAppWithoutAuth();
+      }
+    });
+    supabase.auth.onAuthStateChange(function(event, session){
+      if(event === 'SIGNED_IN' && session){
+        onUserLoggedIn(session.user);
+      } else if(event === 'SIGNED_OUT'){
+        currentUser = null;
+        try{ updateVidaPage(); }catch(e){}
+        showAuthScreen && showAuthScreen();
+      }
+    });
+  }catch(e){
+    console.warn('Supabase init error:', e);
+    try{ initAppWithoutAuth(); }catch(ex){}
+  }
+}
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>MA STUFF</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700;900&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -41,7 +214,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-height:100vh;overflow-x:hidden;background-image:radial-gradient(ellipse at 20% 50%,rgba(26,58,107,0.3) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(123,191,255,0.05) 0%,transparent 50%);}
 
-/* ── ONBOARDING ── */
+/* -- ONBOARDING -- */
 .onboard-banner{background:linear-gradient(135deg,rgba(0,229,255,0.1),rgba(105,255,148,0.06));border-bottom:1px solid rgba(0,229,255,0.2);padding:14px 24px;display:flex;align-items:flex-start;gap:14px;}
 .onboard-banner.hidden{display:none;}
 .onboard-icon{font-size:1.4rem;flex-shrink:0;margin-top:2px;}
@@ -54,25 +227,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .onboard-close{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:4px 10px;font-size:0.72rem;font-family:var(--font-mono);cursor:pointer;transition:all 0.2s;flex-shrink:0;}
 .onboard-close:hover{border-color:var(--accent2);color:var(--accent2);}
 
-/* ── LAYOUT ── */
+/* -- LAYOUT -- */
 .app{display:grid;grid-template-columns:300px 1fr;min-height:100vh;}
 .sidebar{background:var(--s1);border-right:1px solid var(--border);padding:24px 18px;display:flex;flex-direction:column;gap:18px;overflow-y:auto;max-height:100vh;position:sticky;top:0;}
 
-/* ── LOGO ── */
+/* -- LOGO -- */
 .logo-block{display:flex;align-items:center;gap:12px;}
 .logo-svg{width:42px;height:42px;flex-shrink:0;}
 .logo-text{font-family:var(--font-head);font-size:1.3rem;font-weight:800;letter-spacing:-1px;line-height:1;}
 .logo-text .ma{color:var(--text);}.logo-text .stuff{color:var(--accent);}
 .logo-sub{font-size:0.62rem;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-top:3px;}
 
-/* ── PLAN BADGE ── */
+/* -- PLAN BADGE -- */
 .plan-badge{display:flex;align-items:center;justify-content:space-between;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;}
 .plan-name{font-size:0.78rem;font-weight:600;}
 .plan-free .plan-name{color:var(--muted);}.plan-premium .plan-name{color:var(--gold);}
 .plan-upgrade{font-size:0.68rem;background:linear-gradient(90deg,var(--gold),#ffaa00);color:#000;font-weight:700;padding:4px 10px;border-radius:6px;cursor:pointer;border:none;font-family:var(--font-mono);transition:all 0.2s;}
 .plan-upgrade:hover{transform:scale(1.05);}
 
-/* ── CALENDAR ── */
+/* -- CALENDAR -- */
 .section-label{font-size:0.62rem;text-transform:uppercase;letter-spacing:2px;color:var(--muted);margin-bottom:8px;}
 .cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .cal-title-block{display:flex;flex-direction:column;align-items:center;gap:3px;}
@@ -90,7 +263,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .cal-day.selected.has-tasks::after{background:#000;}
 .cal-day.other-month{opacity:0.3;}
 
-/* ── COLLAPSE ── */
+/* -- COLLAPSE -- */
 .collapse-toggle{width:100%;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;color:var(--text);font-family:var(--font-mono);font-size:0.78rem;display:flex;align-items:center;justify-content:space-between;transition:all 0.2s;}
 .collapse-toggle:hover{border-color:rgba(255,255,255,0.15);}
 .collapse-toggle.wa-open{border-color:rgba(0,229,255,0.3);background:rgba(0,229,255,0.04);}
@@ -102,7 +275,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .collapse-body{overflow:hidden;max-height:0;opacity:0;transition:max-height 0.3s ease,opacity 0.25s,margin-top 0.25s;margin-top:0;}
 .collapse-body.open{max-height:260px;opacity:1;margin-top:10px;}
 
-/* ── INPUTS ── */
+/* -- INPUTS -- */
 .inp{background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 12px;font-size:0.8rem;font-family:var(--font-mono);outline:none;width:100%;transition:border 0.2s;}
 .inp:focus{border-color:var(--accent);}
 .inp::placeholder{color:var(--muted);}
@@ -112,7 +285,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .inp-select{background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 12px;font-size:0.8rem;font-family:var(--font-mono);outline:none;width:100%;transition:border 0.2s;cursor:pointer;appearance:none;}
 .inp-select:focus{border-color:var(--accent);}
 
-/* ── BUTTONS ── */
+/* -- BUTTONS -- */
 .btn{padding:9px 16px;border-radius:8px;border:none;cursor:pointer;font-size:0.8rem;font-weight:600;font-family:var(--font-mono);transition:all 0.2s;}
 .btn-accent{background:var(--accent);color:#000;}
 .btn-accent:hover{filter:brightness(1.15);transform:translateY(-1px);}
@@ -121,30 +294,30 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .btn-danger{background:transparent;color:var(--accent2);border:1px solid rgba(255,107,107,0.3);}
 .btn-danger:hover{background:var(--accent2);color:#fff;}
 
-/* ── STATUS DOT ── */
+/* -- STATUS DOT -- */
 .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block;transition:all 0.3s;}
 .dot.ok{background:var(--accent3);box-shadow:0 0 6px var(--accent3);}
 
-/* ── SOUND GRID ── */
+/* -- SOUND GRID -- */
 .sound-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
 .sound-btn{padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--s2);color:var(--muted);cursor:pointer;font-size:0.7rem;font-family:var(--font-mono);text-align:center;transition:all 0.2s;}
 .sound-btn:hover{border-color:var(--gold);color:var(--gold);}
 .sound-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(255,209,102,0.08);}
 
-/* ── GUIDE ── */
+/* -- GUIDE -- */
 .guide{background:linear-gradient(135deg,rgba(0,229,255,0.05),rgba(105,255,148,0.04));border:1px solid rgba(0,229,255,0.12);border-radius:var(--radius);padding:14px;margin-top:auto;}
 .guide-title{font-size:0.76rem;font-family:var(--font-head);font-weight:700;margin-bottom:8px;}
 .guide ol{padding-left:16px;font-size:0.74rem;color:var(--muted);line-height:2.1;}
 .guide ol strong{color:var(--text);}
 
-/* ── MAIN ── */
+/* -- MAIN -- */
 .main{display:flex;flex-direction:column;overflow:hidden;}
 .topbar{background:var(--s1);border-bottom:1px solid var(--border);padding:18px 28px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .topbar-date{font-family:var(--font-head);font-size:1.05rem;font-weight:700;}
 .clock{font-size:0.82rem;color:var(--muted);}
 .content{padding:22px 28px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:18px;}
 
-/* ── STATS ── */
+/* -- STATS -- */
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
 .stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;position:relative;overflow:hidden;}
 .stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
@@ -153,7 +326,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .stat.total .stat-num{color:var(--accent);}.stat.done .stat-num{color:var(--accent3);}.stat.pending .stat-num{color:var(--gold);}
 .stat-label{font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px;}
 
-/* ── PREMIUM BANNER ── */
+/* -- PREMIUM BANNER -- */
 .premium-banner{background:linear-gradient(135deg,rgba(255,209,102,0.08),rgba(185,127,255,0.06));border:1px solid rgba(255,209,102,0.2);border-radius:var(--radius);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;}
 .pb-left{flex:1;}
 .pb-title{font-family:var(--font-head);font-size:0.9rem;font-weight:700;color:var(--gold);margin-bottom:4px;}
@@ -163,7 +336,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .pb-btn{background:linear-gradient(135deg,var(--gold),#ffaa00);color:#000;font-weight:700;padding:10px 20px;border-radius:10px;border:none;cursor:pointer;font-family:var(--font-mono);font-size:0.8rem;transition:all 0.2s;white-space:nowrap;flex-shrink:0;}
 .pb-btn:hover{transform:scale(1.05);}
 
-/* ── ADD TASK PANEL ── */
+/* -- ADD TASK PANEL -- */
 .add-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;}
 .panel-title{font-family:var(--font-head);font-size:0.82rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:12px;}
 .date-badge{font-size:0.73rem;color:var(--accent);background:rgba(0,229,255,0.07);border:1px solid rgba(0,229,255,0.18);border-radius:6px;padding:4px 10px;display:inline-flex;align-items:center;gap:5px;margin-bottom:12px;}
@@ -176,7 +349,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .quick-chip.premium-chip{border-color:rgba(255,209,102,0.2);color:rgba(255,209,102,0.5);}
 .quick-chip.premium-chip:hover{border-color:var(--gold);color:var(--gold);background:rgba(255,209,102,0.05);}
 
-/* ── TASK LIST ── */
+/* -- TASK LIST -- */
 .tasks-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;flex:1;}
 .tasks-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
 .task-count{font-size:0.7rem;background:rgba(0,229,255,0.08);color:var(--accent);border:1px solid rgba(0,229,255,0.18);padding:3px 10px;border-radius:20px;}
@@ -204,7 +377,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .icon-btn.edit-btn:hover{border-color:var(--accent);color:var(--accent);}
 .empty{text-align:center;padding:44px 20px;color:var(--muted);font-size:0.83rem;line-height:2.4;}
 
-/* ── EDIT MODAL ── */
+/* -- EDIT MODAL -- */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:100;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.25s;}
 .modal-overlay.show{opacity:1;pointer-events:all;}
 .modal{background:var(--s1);border:1px solid var(--border);border-radius:20px;padding:28px;width:90%;max-width:520px;position:relative;transform:scale(0.96);transition:transform 0.25s;max-height:90vh;overflow-y:auto;}
@@ -253,7 +426,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 /* MODAL FOOTER */
 .modal-footer{display:flex;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);}
 
-/* ── PAYWALL MODAL ── */
+/* -- PAYWALL MODAL -- */
 .paywall-modal{background:var(--s1);border:1px solid rgba(255,209,102,0.25);border-radius:20px;padding:32px;max-width:440px;width:90%;position:relative;transform:scale(0.95);transition:transform 0.3s;}
 .modal-overlay.show .paywall-modal{transform:scale(1);}
 .modal-icon{font-size:2.4rem;text-align:center;margin-bottom:10px;}
@@ -272,7 +445,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .modal-cta:hover{filter:brightness(1.1);transform:translateY(-1px);}
 .modal-note{font-size:0.7rem;color:var(--muted);text-align:center;margin-top:10px;}
 
-/* ── TOAST ── */
+/* -- TOAST -- */
 .toast{position:fixed;bottom:24px;right:24px;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:13px 18px;font-size:0.8rem;font-family:var(--font-mono);box-shadow:0 12px 40px rgba(0,0,0,0.5);z-index:200;opacity:0;transform:translateY(10px);transition:all 0.3s;pointer-events:none;max-width:300px;}
 .toast.show{opacity:1;transform:translateY(0);}
 .toast.success{border-color:var(--accent3);}.toast.error{border-color:var(--accent2);}.toast.info{border-color:var(--accent);}.toast.fun{border-color:var(--purple);}
@@ -288,7 +461,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   .recur-grid{grid-template-columns:repeat(2,1fr);}
 }
 
-/* ── QUICK MANAGER ── */
+/* -- QUICK MANAGER -- */
 .btn-add-quick{background:var(--s2);border:1px dashed rgba(0,229,255,0.3);border-radius:6px;color:var(--accent);font-size:0.7rem;font-family:var(--font-mono);padding:4px 10px;cursor:pointer;transition:all 0.2s;}
 .btn-add-quick:hover{background:rgba(0,229,255,0.08);border-color:var(--accent);}
 .quick-manager-row{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;}
@@ -297,13 +470,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .quick-manager-row .qm-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.85rem;transition:color 0.2s;padding:2px 6px;}
 .quick-manager-row .qm-del:hover{color:var(--accent2);}
 
-/* ── ALARM vs TASK separation ── */
+/* -- ALARM vs TASK separation -- */
 .section-card{background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:0;}
 .section-card-title{font-size:0.68rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:6px;}
 .section-card-title.task-section{color:var(--accent);}
 .section-card-title.alarm-section{color:var(--gold);}
 
-/* ── QM EMOJI PICKER ── */
+/* -- QM EMOJI PICKER -- */
 .qm-emoji-toggle{
   display:flex;align-items:center;gap:10px;
   background:var(--s2);border:1px solid var(--border);border-radius:8px;
@@ -331,7 +504,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .qm-emoji-opt:hover{transform:scale(1.2);background:var(--s3);}
 .qm-emoji-opt.selected{border-color:var(--accent);background:rgba(0,229,255,0.1);}
 
-/* ── SUGGESTION GRID ── */
+/* -- SUGGESTION GRID -- */
 .suggestion-grid{display:flex;flex-wrap:wrap;gap:6px;}
 .suggestion-chip{
   display:flex;align-items:center;gap:5px;
@@ -342,7 +515,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .suggestion-chip:hover{border-color:var(--accent);color:var(--accent);background:rgba(0,229,255,0.05);transform:translateY(-1px);}
 .suggestion-chip.selected{border-color:var(--accent3);color:var(--accent3);background:rgba(105,255,148,0.07);}
 
-/* ── RANDOM BUTTON ── */
+/* -- RANDOM BUTTON -- */
 .btn-random{
   background:linear-gradient(135deg,var(--purple),#7c3aed);
   color:#fff;border:none;border-radius:8px;padding:5px 12px;
@@ -483,7 +656,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   line-height:1.7;color:var(--text);border-left:3px solid var(--accent3);
 }
 
-/* ── AI MOTIVATION SIDEBAR ── */
+/* -- AI MOTIVATION SIDEBAR -- */
 .ai-motivation-card{
   background:linear-gradient(135deg,rgba(185,127,255,0.08),rgba(124,58,237,0.05));
   border:1px solid rgba(185,127,255,0.2);border-radius:var(--radius);
@@ -507,7 +680,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .ai-motivation-wa:hover{background:rgba(105,255,148,0.08);}
 
-/* ── TOPBAR ANALYZE BUTTON ── */
+/* -- TOPBAR ANALYZE BUTTON -- */
 .btn-analyze-day{
   background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);
   color:var(--accent);border-radius:8px;padding:6px 12px;font-size:0.75rem;
@@ -516,7 +689,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .btn-analyze-day:hover{background:rgba(0,229,255,0.14);border-color:var(--accent);}
 .btn-analyze-day.active{background:rgba(0,229,255,0.15);border-color:var(--accent);}
 
-/* ── DAY SUMMARY PANEL ── */
+/* -- DAY SUMMARY PANEL -- */
 .day-summary-panel{
   background:var(--s1);border-bottom:1px solid var(--border);
   padding:0 28px;max-height:0;overflow:hidden;
@@ -529,7 +702,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   border:1px solid rgba(0,229,255,0.12);border-radius:10px;padding:12px 14px;
 }
 
-/* ── HABITS INLINE ── */
+/* -- HABITS INLINE -- */
 .btn-habits-inline{
   background:rgba(185,127,255,0.07);border:1px dashed rgba(185,127,255,0.25);
   color:var(--purple);border-radius:10px;padding:10px;width:100%;
@@ -545,7 +718,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   font-size:0.82rem;font-weight:600;color:var(--purple);margin-bottom:12px;
 }
 
-/* ── AI MODE TOGGLE (in add panel) ── */
+/* -- AI MODE TOGGLE (in add panel) -- */
 .ai-mode-toggle{display:flex;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:3px;gap:3px;}
 .ai-mode-btn{
   padding:5px 12px;border-radius:6px;border:none;background:none;
@@ -553,7 +726,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .ai-mode-btn.active{background:var(--accent);color:#000;font-weight:700;}
 
-/* ── AI TEXTAREA ── */
+/* -- AI TEXTAREA -- */
 .ai-gen-input-wrap{display:flex;flex-direction:column;gap:8px;}
 .ai-gen-textarea{
   resize:none;line-height:1.5;font-size:0.82rem;
@@ -561,7 +734,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .ai-gen-textarea:focus{border-color:var(--purple);}
 
-/* ── INLINE CHAT ── */
+/* -- INLINE CHAT -- */
 .inline-chat-panel{
   background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);
   padding:16px 20px;
@@ -577,7 +750,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 /* Remove FAB since AI is now integrated */
 .ai-fab{display:none !important;}
 
-/* ── MOTIVATION ROTATING BANNER ── */
+/* -- MOTIVATION ROTATING BANNER -- */
 .motivation-banner{
   background:linear-gradient(135deg,rgba(26,58,107,0.6),rgba(10,22,40,0.8));
   border:1px solid rgba(212,175,106,0.25);
@@ -627,7 +800,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════
-   MA STUFF v12 — NAVY PROFESSIONAL THEME
+   MA STUFF v12 - NAVY PROFESSIONAL THEME
 ════════════════════════════════════════ */
 
 /* LOGO */
@@ -955,7 +1128,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .levelup-title{font-family:var(--font-head);font-size:1.3rem;font-weight:900;color:var(--gold);}
 .levelup-sub{font-size:0.8rem;color:var(--muted);margin-top:4px;}
 
-/* ── ALARM DASHBOARD ── */
+/* -- ALARM DASHBOARD -- */
 .alarm-dashboard{
   background:linear-gradient(135deg,var(--s1),var(--s2));
   border:1px solid rgba(212,175,106,0.15);
@@ -1036,7 +1209,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════
-   MOBILE-FIRST — MA STUFF v15
+   MOBILE-FIRST - MA STUFF v15
 ════════════════════════════════════════ */
 
 /* GPU acceleration for animated elements */
@@ -1049,7 +1222,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 
 /* BOTTOM NAVIGATION (mobile) */
 /* ═══════════════════════════════════════════
-   PREMIUM BOTTOM NAVIGATION — MA STUFF v19
+   PREMIUM BOTTOM NAVIGATION - MA STUFF v19
 ═══════════════════════════════════════════ */
 .bottom-nav{
   display:block;
@@ -1124,7 +1297,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   transform:scale(0.88);
 }
 
-/* CENTER FAB BUTTON — Add Task */
+/* CENTER FAB BUTTON - Add Task */
 .bottom-nav-item.nav-fab{
   position:relative;
 }
@@ -1163,7 +1336,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .app{padding-bottom:100px;}
 .content{padding-bottom:20px;}
 
-/* MOBILE VIEWS — sections toggle */
+/* MOBILE VIEWS - sections toggle */
 .mobile-view{display:block;}
 
 /* SWIPE TO DELETE */
@@ -1183,7 +1356,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .task-item.swipe-reveal .swipe-delete-bg{opacity:1;}
 
-/* TOUCH TARGETS — minimum 48x48 */
+/* TOUCH TARGETS - minimum 48x48 */
 .check{min-width:44px;min-height:44px;border-radius:50%;}
 .icon-btn{min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;}
 .cal-day{min-height:32px;display:flex;align-items:center;justify-content:center;}
@@ -1207,7 +1380,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .theme-toggle:hover{border-color:var(--gold);color:var(--gold);}
 
-/* PRIORITY visual hierarchy — stronger differentiation */
+/* PRIORITY visual hierarchy - stronger differentiation */
 .task-item.priority-high-task{
   border-left:4px solid var(--accent2) !important;
   background:linear-gradient(90deg,rgba(232,115,74,0.06),var(--s2)) !important;
@@ -1262,10 +1435,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════
-   MA STUFF v16 — 8 NEW FEATURES
+   MA STUFF v16 - 8 NEW FEATURES
 ════════════════════════════════════════ */
 
-/* ── WEEKLY VIEW ── */
+/* -- WEEKLY VIEW -- */
 .week-view-panel{
   background:var(--s1);border:1px solid var(--border);
   border-radius:var(--radius);padding:18px 20px;
@@ -1297,7 +1470,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .week-task-dot.none{background:var(--muted);}
 .week-completion{font-size:0.65rem;color:var(--muted);margin-top:2px;}
 
-/* ── LIFE DASHBOARD ── */
+/* -- LIFE DASHBOARD -- */
 .life-dashboard{
   background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;
 }
@@ -1320,7 +1493,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   font-size:0.78rem;line-height:1.7;color:var(--text);
 }
 
-/* ── FOCUS MODE ── */
+/* -- FOCUS MODE -- */
 .focus-overlay{
   position:fixed;inset:0;background:rgba(6,13,26,0.97);z-index:500;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1363,7 +1536,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 .focus-task-btn:hover{background:rgba(212,175,106,0.2);}
 
-/* ── COUPLE MODE ── */
+/* -- COUPLE MODE -- */
 .couple-banner{
   background:linear-gradient(135deg,rgba(232,115,74,0.08),rgba(212,175,106,0.05));
   border:1px solid rgba(232,115,74,0.2);border-radius:var(--radius);
@@ -1385,7 +1558,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   border-radius:20px;padding:3px 8px;
 }
 
-/* ── AI MEMORY ── */
+/* -- AI MEMORY -- */
 .memory-panel{
   background:var(--s1);border:1px solid rgba(212,175,106,0.15);
   border-radius:var(--radius);padding:16px 18px;
@@ -1400,7 +1573,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .memory-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;transition:color 0.2s;padding:2px 6px;}
 .memory-del:hover{color:var(--accent2);}
 
-/* ── WEEKLY REPORT ── */
+/* -- WEEKLY REPORT -- */
 .weekly-report-card{
   background:linear-gradient(135deg,rgba(26,58,107,0.4),rgba(15,31,58,0.6));
   border:1px solid rgba(212,175,106,0.18);border-radius:var(--radius);padding:16px 18px;
@@ -1723,10 +1896,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════
-   MA STUFF v19 — UX POLISH
+   MA STUFF v19 - UX POLISH
 ════════════════════════════════════════ */
 
-/* ADD TASK — labeled inputs */
+/* ADD TASK - labeled inputs */
 .add-input-group{display:flex;flex-direction:column;gap:4px;flex:1;}
 .add-input-label{font-size:0.62rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding-left:2px;}
 .add-input-row{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;}
@@ -1741,7 +1914,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .time-input-wrap{display:flex;flex-direction:column;gap:4px;}
 .time-input-wrap .time-label{font-size:0.62rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
 
-/* AI toggle — clearer */
+/* AI toggle - clearer */
 .ai-mode-toggle{background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:3px;display:flex;gap:3px;}
 .ai-mode-btn{padding:6px 14px;border-radius:7px;border:none;background:none;
   color:var(--muted);font-size:0.75rem;font-family:var(--font-body);cursor:pointer;
@@ -1749,7 +1922,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .ai-mode-btn.active{background:var(--accent);color:#060d1a;font-weight:700;}
 .ai-mode-btn .mode-icon{font-size:0.9rem;}
 
-/* Quick chips — visual hierarchy */
+/* Quick chips - visual hierarchy */
 .quick-chip{
   background:var(--s2);border:1px solid rgba(168,189,212,0.15);
   border-radius:20px;padding:8px 14px;cursor:pointer;
@@ -1931,7 +2104,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .widget-restore-chip:hover{border-color:var(--gold);color:var(--gold);}
 
 /* ════════════════════════════════════════
-   SETTINGS MODAL — MA STUFF
+   SETTINGS MODAL - MA STUFF
 ════════════════════════════════════════ */
 .settings-modal{
   background:var(--s1);
@@ -2069,7 +2242,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 @keyframes playPulse{from{opacity:1}to{opacity:0.4}}
 
 /* ════════════════════════════════════════
-   PLANIFICA MI DIA — Feature 1
+   PLANIFICA MI DIA - Feature 1
 ════════════════════════════════════════ */
 .plan-day-btn{
   width:100%;
@@ -2247,7 +2420,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════════════════════
-   PAGE SYSTEM — MA STUFF v19
+   PAGE SYSTEM - MA STUFF v19
    5 pages: Inicio / Tareas / Agregar / Asistente / Mi Vida
 ════════════════════════════════════════════════════════ */
 
@@ -2338,7 +2511,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 }
 
 /* ════════════════════════════════════════
-   AUTH + MI VIDA — Supabase Integration
+   AUTH + MI VIDA - Supabase Integration
 ════════════════════════════════════════ */
 
 /* Auth screen */
@@ -2455,7 +2628,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   cursor:pointer;border:2px solid rgba(212,175,106,0.4);
 }
 
-/* MI VIDA PAGE — redesigned */
+/* MI VIDA PAGE - redesigned */
 .vida-header{
   background:linear-gradient(135deg,rgba(212,175,106,0.1),rgba(26,58,107,0.15));
   border:1px solid rgba(212,175,106,0.15);
@@ -2540,6 +2713,38 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .heatmap-cell[data-level="2"]{background:rgba(212,175,106,0.5);}
 .heatmap-cell[data-level="3"]{background:rgba(212,175,106,0.75);}
 .heatmap-cell[data-level="4"]{background:var(--gold);}
+
+/* PAGES TAKE FULL WIDTH - sidebar is separate */
+.pages-wrapper{
+  position:relative !important;
+  overflow:hidden !important;
+  flex:1;
+}
+/* On desktop, pages respect the main layout */
+@media(min-width:769px){
+  .pages-wrapper{
+    margin-left:0;
+  }
+}
+/* Mi Vida page specific fixes */
+#page-life{
+  background:var(--bg);
+}
+#page-life .vida-header{
+  max-width:600px;
+}
+#page-life .page-card{
+  max-width:600px;
+}
+#page-life .vida-area-card{
+  max-width:600px;
+}
+
+/* MOBILE OPTIMIZATIONS */
+:root{
+  --safe-bottom: env(safe-area-inset-bottom, 12px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
 </style>
 </head>
 <body style="padding-bottom:90px;">
@@ -2586,7 +2791,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <ul class="onboard-steps">
       <li><span class="sn">1</span>Guarda <strong>+34 644 60 67 30</strong> en tus contactos</li>
       <li><span class="sn">2</span>Envíale: <strong>I allow callmebot to send me messages</strong></li>
-      <li><span class="sn">3</span>Recibirás tu API Key — ingrésala en el panel lateral</li>
+      <li><span class="sn">3</span>Recibirás tu API Key - ingrésala en el panel lateral</li>
     </ul>
   </div>
   <button class="onboard-close" onclick="closeBanner()">Entendido ✓</button>
@@ -2596,7 +2801,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   <!-- SIDEBAR -->
   <aside class="sidebar">
     <div class="logo-block">
-      <!-- New logo: compass/navigation mark — precision & direction -->
+      <!-- New logo: compass/navigation mark - precision & direction -->
       <svg class="logo-svg" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <linearGradient id="lgNavy" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
@@ -2706,7 +2911,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   <div class="main">
     <div class="topbar">
       <div>
-        <div class="topbar-date" id="topDate">—</div>
+        <div class="topbar-date" id="topDate">-</div>
         <div style="font-size:0.7rem;color:var(--muted);margin-top:2px;" id="topDateSub"></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
@@ -2767,7 +2972,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
       </button>
 
       
-    <!-- ROTATING MOTIVATION BANNER — first element -->
+    <!-- ROTATING MOTIVATION BANNER - first element -->
       <div class="motivation-banner dashboard-widget" id="motivationBanner" data-widget="motivation" data-label="Motivacion IA">
         <div class="motivation-banner-icon" id="motBannerIcon">🌟</div>
         <div class="motivation-banner-content">
@@ -2820,7 +3025,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 
       <div class="premium-banner" id="premiumBanner">
         <div class="pb-left">
-          <div class="pb-title">✦ MA STUFF Premium — desde $2.99/mes</div>
+          <div class="pb-title">✦ MA STUFF Premium - desde $2.99/mes</div>
           <div class="pb-desc">Tareas ilimitadas, estadísticas semanales, temas de color y más.</div>
           <div class="pb-features">
             <span class="pb-feat">✓ Tareas ilimitadas</span>
@@ -2838,7 +3043,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
           ✏️ Personalizar dashboard
         </button>
         <div class="widget-restore-panel" id="widgetRestorePanel">
-          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px;">Secciones ocultas — toca para restaurar</div>
+          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px;">Secciones ocultas - toca para restaurar</div>
           <div id="widgetRestoreChips"></div>
         </div>
       </div>
@@ -2942,7 +3147,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
             </button>
           </div>
         </div>
-        <div class="date-badge" id="selDateBadge">📅 —</div>
+        <div class="date-badge" id="selDateBadge">📅 -</div>
 
         <!-- MANUAL MODE -->
         <div id="manualInputSection">
@@ -3048,7 +3253,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
         <button class="priority-opt" data-p="high" onclick="setEditPriority('high')">🔴 Alta</button>
         <button class="priority-opt" data-p="medium" onclick="setEditPriority('medium')">🟡 Media</button>
         <button class="priority-opt" data-p="low" onclick="setEditPriority('low')">🟢 Baja</button>
-        <button class="priority-opt" data-p="none" onclick="setEditPriority('none')">— Sin prioridad</button>
+        <button class="priority-opt" data-p="none" onclick="setEditPriority('none')">- Sin prioridad</button>
       </div>
     </div>
 
@@ -3095,7 +3300,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
         <button class="recur-btn" data-area="finance" onclick="setLifeArea('finance')">💰 Finanzas</button>
         <button class="recur-btn" data-area="relations" onclick="setLifeArea('relations')">🤝 Relaciones</button>
         <button class="recur-btn" data-area="growth" onclick="setLifeArea('growth')">📚 Crecimiento</button>
-        <button class="recur-btn active" data-area="other" onclick="setLifeArea('other')">— Sin área</button>
+        <button class="recur-btn active" data-area="other" onclick="setLifeArea('other')">- Sin área</button>
       </div>
     </div>
 
@@ -3142,7 +3347,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
         </ul>
       </div>
     </div>
-    <button class="modal-cta" onclick="activatePremium()">Activar Premium — $2.99/mes</button>
+    <button class="modal-cta" onclick="activatePremium()">Activar Premium - $2.99/mes</button>
     <div class="modal-note">🔒 Sin compromisos · Cancela cuando quieras</div>
   </div>
 </div>
@@ -3184,7 +3389,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <!-- Sugerencias clicables + botón aleatorio -->
     <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-        <span style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);">Sugerencias — toca para seleccionar</span>
+        <span style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);">Sugerencias - toca para seleccionar</span>
         <button class="btn-random" onclick="randomizeTask()">🎲 Aleatorio</button>
       </div>
       <div class="suggestion-grid" id="suggestionGrid"></div>
@@ -3225,7 +3430,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
       <!-- TAB 1: TASK GENERATOR -->
       <div class="ai-panel active" id="panel-generator">
         <div style="font-size:0.78rem;color:var(--muted);line-height:1.6;">
-          Describe lo que necesitas hacer — la IA lo convierte en tareas concretas con hora y emoji.
+          Describe lo que necesitas hacer - la IA lo convierte en tareas concretas con hora y emoji.
         </div>
         <div style="display:flex;gap:8px;">
           <input class="inp" type="text" id="aiGenInput" placeholder="Ej: tengo una presentación importante mañana..." style="flex:1;">
@@ -3312,7 +3517,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
         <button class="recur-btn active" data-ar="none" onclick="setAlarmRecur('none')">Una vez</button>
         <button class="recur-btn" data-ar="daily" onclick="setAlarmRecur('daily')">Diaria</button>
         <button class="recur-btn" data-ar="weekly" onclick="setAlarmRecur('weekly')">Semanal</button>
-        <button class="recur-btn" data-ar="weekdays" onclick="setAlarmRecur('weekdays')">Lun–Vie</button>
+        <button class="recur-btn" data-ar="weekdays" onclick="setAlarmRecur('weekdays')">Lun-Vie</button>
       </div>
     </div>
 
@@ -3324,7 +3529,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <div class="form-group">
       <label class="form-label">Vincular a tarea (opcional)</label>
       <select class="inp-select inp" id="alarmModalTask">
-        <option value="">— Sin vincular (alarma independiente)</option>
+        <option value="">- Sin vincular (alarma independiente)</option>
       </select>
     </div>
 
@@ -4287,7 +4492,9 @@ window.onload=()=>{
   try{ initWidgetSystem(); }catch(e){}
   try{ initPremiumNav(); }catch(e){}
   try{ initPages(); }catch(e){}
-  try{ initSupabase(); }catch(e){ initAppWithoutAuth(); }
+  setTimeout(function(){ try{ updateVidaPage(); }catch(e){}; }, 300);
+  // Supabase is now inline - init directly
+  // initSupabase called after all scripts load (see bottom of page)
   // Auto-load AI motivation after DOM is fully ready
   setTimeout(()=>{
     try{
@@ -5730,6 +5937,76 @@ function closeAIModal(){}
 function switchAITab(){}
 
 // Auto-generate daily summary on load if has tasks
+
+// -- AUTH WRAPPER FUNCTIONS (available immediately) ------
+// These wrap the Supabase functions so onclick handlers work
+// even before the Supabase script loads
+
+function loginWithGoogle(){
+  if(typeof supabase === 'undefined' || !supabase){
+    showToast('Iniciando... toca de nuevo en un momento', 'info');
+    setTimeout(loginWithGoogle, 1500);
+    return;
+  }
+  var btn = document.getElementById('vidaGoogleBtn') || document.getElementById('googleLoginBtn');
+  if(btn){ btn.textContent = 'Abriendo Google...'; btn.style.opacity = '0.8'; }
+  supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: 'https://sirmax-98.github.io/mastuff/',
+      queryParams: { access_type: 'offline', prompt: 'consent' }
+    }
+  }).then(function(result){
+    if(result.error){
+      showToast('Error: ' + result.error.message, 'error');
+      if(btn){ btn.textContent = 'Continuar con Google'; btn.style.opacity = '1'; }
+    }
+  }).catch(function(e){
+    showToast('Error de conexion', 'error');
+    if(btn){ btn.textContent = 'Continuar con Google'; btn.style.opacity = '1'; }
+  });
+}
+
+function _sb_toggleVidaEmailForm(){
+  var form = document.getElementById('vidaEmailForm');
+  if(form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+}
+
+function loginWithEmail(){
+  if(typeof supabase === 'undefined' || !supabase){ showToast('Cargando...','error'); return; }
+  var email = (document.getElementById('vidaEmail') || {}).value || '';
+  var pass  = (document.getElementById('vidaPass')  || {}).value || '';
+  if(!email || !pass){ showToast('Completa email y contrasena','error'); return; }
+  supabase.auth.signInWithPassword({email:email, password:pass}).then(function(res){
+    if(res.error) showToast('Error: '+res.error.message,'error');
+  });
+}
+
+function signupWithEmail(){
+  if(typeof supabase === 'undefined' || !supabase){ showToast('Cargando...','error'); return; }
+  var email = (document.getElementById('vidaEmail') || {}).value || '';
+  var pass  = (document.getElementById('vidaPass')  || {}).value || '';
+  if(!email || pass.length < 6){ showToast('Email valido y contrasena de 6+ caracteres','error'); return; }
+  supabase.auth.signUp({email:email, password:pass}).then(function(res){
+    if(res.error) showToast('Error: '+res.error.message,'error');
+    else showToast('Cuenta creada! Revisa tu email.','success');
+  });
+}
+
+function signOut(){
+  if(typeof supabase === 'undefined' || !supabase) return;
+  supabase.auth.signOut().then(function(){
+    currentUser = null;
+    try{ updateVidaPage(); }catch(e){}
+    showToast('Sesion cerrada','info');
+  });
+}
+
+// Stubs - overridden by full Supabase implementation later
+if(typeof initSupabase === 'undefined') window.initSupabase = function(){ console.log('Supabase not yet loaded'); };
+if(typeof initAppWithoutAuth === 'undefined') window.initAppWithoutAuth = function(){ try{ updateVidaPage(); }catch(e){} };
+if(typeof updateVidaPage === 'undefined') window.updateVidaPage = function(){};
+
 window.addEventListener('load', ()=>{
   setTimeout(()=>{
     const {todayTasks} = getTaskContext();
@@ -8750,7 +9027,9 @@ function onPageEnter(page){
   }
   if(page === 'life'){
     try{ buildLifeDashboard(); }catch(e){}
-    try{ updateVidaPage(); }catch(e){}
+    setTimeout(function(){
+      try{ updateVidaPage(); }catch(e){ console.warn('vida:',e); }
+    }, 100);
   }
   // Update FAB icon
   var fabCircle = document.querySelector('.nav-fab-circle');
@@ -8784,10 +9063,13 @@ function initPages(){
     var topbar = document.querySelector('.topbar');
     var nav = document.getElementById('bottomNav');
     var wrapper = document.getElementById('pagesWrapper');
-    if(wrapper && topbar && nav){
-      var topH = topbar.offsetHeight || 56;
-      var navH = nav.offsetHeight || 90;
-      wrapper.style.height = (window.innerHeight - topH - navH) + 'px';
+    if(wrapper){
+      var topH = topbar ? topbar.offsetHeight : 56;
+      var navH = nav ? nav.offsetHeight : 80;
+      var h = window.innerHeight - topH - navH;
+      wrapper.style.height = h + 'px';
+      wrapper.style.position = 'relative';
+      wrapper.style.overflow = 'hidden';
     }
   }
   fixHeight();
@@ -9127,7 +9409,59 @@ function initPages(){
   </div>
 
   <!-- PAGE 5: MI VIDA -->
-  <div class="app-page" id="page-life" data-page="life">
+  <div class="app-page" id="page-life" data-page="life" style="padding:12px;">
+
+    <!-- LOGIN / ACCOUNT SECTION -->
+    <div id="vidaLoginSection" style="display:block !important;margin-bottom:16px;">
+      <div style="background:linear-gradient(135deg,rgba(212,175,106,0.1),rgba(26,58,107,0.15));border:1px solid rgba(212,175,106,0.25);border-radius:20px;padding:24px 20px;text-align:center;">
+        <div style="font-size:2.5rem;margin-bottom:10px;">🔐</div>
+        <div style="font-family:var(--font-head);font-size:1.1rem;font-weight:800;color:var(--text);margin-bottom:6px;">Crea tu cuenta</div>
+        <div style="font-size:0.78rem;color:var(--muted);line-height:1.6;margin-bottom:20px;">Sincroniza tus datos en la nube.<br>Accede desde cualquier dispositivo.</div>
+
+        <!-- Google button -->
+        <button onclick="loginWithGoogle()" id="vidaGoogleBtn"
+          style="width:100%;background:white;color:#1a1a1a;border:none;border-radius:12px;padding:13px 16px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:0.88rem;font-weight:700;cursor:pointer;margin-bottom:10px;min-height:48px;box-shadow:0 2px 12px rgba(0,0,0,0.3);transition:all 0.2s;">
+          <svg width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          Continuar con Google
+        </button>
+
+        <!-- Email form toggle -->
+        <button onclick="toggleVidaEmailForm()"
+          style="width:100%;background:rgba(212,175,106,0.08);border:1px solid rgba(212,175,106,0.2);color:var(--gold);border-radius:12px;padding:12px;font-size:0.82rem;font-weight:600;cursor:pointer;min-height:44px;margin-bottom:12px;">
+          ✉️ Continuar con email
+        </button>
+
+        <div id="vidaEmailForm" style="display:none;flex-direction:column;gap:8px;margin-bottom:12px;">
+          <input class="inp" type="email" id="vidaEmail" placeholder="tu@email.com" style="font-size:0.85rem;">
+          <input class="inp" type="password" id="vidaPass" placeholder="Contraseña (min 6 caracteres)" style="font-size:0.85rem;">
+          <div style="display:flex;gap:8px;">
+            <button onclick="loginWithEmail()" style="flex:1;background:linear-gradient(135deg,var(--gold),#b8924a);color:#060d1a;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:0.82rem;min-height:44px;">Entrar</button>
+            <button onclick="signupWithEmail()" style="flex:1;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:11px;font-weight:600;cursor:pointer;font-size:0.82rem;min-height:44px;">Crear cuenta</button>
+          </div>
+        </div>
+
+        <div style="font-size:0.68rem;color:var(--muted);">Tus datos actuales se mantienen aunque no tengas cuenta</div>
+      </div>
+    </div>
+
+    <!-- LOGGED IN: ACCOUNT ACTIONS -->
+    <div id="vidaAccountSection" style="display:none;margin-bottom:12px;">
+      <div style="background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:1.2rem;">✓</div>
+          <div>
+            <div style="font-size:0.82rem;font-weight:700;color:var(--text);" id="vidaAccountEmail">cuenta@email.com</div>
+            <div style="font-size:0.68rem;color:var(--accent3);">Sincronizado con la nube</div>
+          </div>
+        </div>
+        <button onclick="signOut()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.72rem;min-height:36px;">Salir</button>
+      </div>
+    </div>
 
     <!-- USER PROFILE HEADER -->
     <div class="vida-header" id="vidaHeader">
@@ -9419,7 +9753,8 @@ function initPages(){
 </div>
 
 <!-- SUPABASE SDK -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">// ════════════════════════════════════════════════════════
+</script>
+<script>// ════════════════════════════════════════════════════════
 // SUPABASE INTEGRATION - MA STUFF v19
 // ════════════════════════════════════════════════════════
 
@@ -9429,38 +9764,7 @@ const SUPABASE_KEY = 'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-';
 var supabase = null;
 var currentUser = null;
 
-function initSupabase(){
-  try{
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    // Check if already logged in
-    supabase.auth.getSession().then(function(res){
-      var session = res.data && res.data.session;
-      if(session && session.user){
-        onUserLoggedIn(session.user);
-      } else {
-        // Check if user wants to skip auth
-        var skipped = localStorage.getItem('msAuthSkipped');
-        if(!skipped){
-          showAuthScreen();
-        } else {
-          initAppWithoutAuth();
-        }
-      }
-    });
-    // Listen for auth changes
-    supabase.auth.onAuthStateChange(function(event, session){
-      if(event === 'SIGNED_IN' && session){
-        onUserLoggedIn(session.user);
-      } else if(event === 'SIGNED_OUT'){
-        currentUser = null;
-        showAuthScreen();
-      }
-    });
-  }catch(e){
-    console.warn('Supabase init error:', e);
-    initAppWithoutAuth();
-  }
-}
+// initSupabase moved to head
 
 function showAuthScreen(){
   var screen = document.getElementById('authScreen');
@@ -9477,15 +9781,26 @@ function hideAuthScreen(){
   document.body.style.overflow = '';
 }
 
-async function loginWithGoogle(){
-  if(!supabase) return;
-  var btn = document.getElementById('googleLoginBtn');
-  if(btn) btn.textContent = 'Conectando...';
+async function _sb_loginWithGoogle(){
+  if(!supabase){
+    showToast('Error: Supabase no cargado. Recarga la pagina.','error');
+    return;
+  }
+  var btn = document.getElementById('vidaGoogleBtn') || document.getElementById('googleLoginBtn');
+  if(btn){
+    btn.textContent = 'Abriendo Google...';
+    btn.style.opacity = '0.8';
+  }
   try{
+    showToast('Conectando con Google...', 'info');
     var result = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.href
+        redirectTo: 'https://sirmax-98.github.io/mastuff/',
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
+        }
       }
     });
     if(result.error) throw result.error;
@@ -9500,26 +9815,30 @@ function toggleEmailForm(){
   if(form) form.classList.toggle('show');
 }
 
-async function loginWithEmail(){
-  if(!supabase) return;
-  var email = document.getElementById('authEmail').value.trim();
-  var pass  = document.getElementById('authPass').value;
-  if(!email||!pass){ showToast('Completa email y contraseña','error'); return; }
+async function _sb_loginWithEmail(){
+  if(!supabase){ showToast('Servicio no disponible','error'); return; }
+  var emailEl = document.getElementById('vidaEmail') || document.getElementById('authEmail');
+  var passEl  = document.getElementById('vidaPass')  || document.getElementById('authPass');
+  var email = emailEl ? emailEl.value.trim() : '';
+  var pass  = passEl  ? passEl.value : '';
+  if(!email||!pass){ showToast('Completa email y contrasena','error'); return; }
   try{
-    var res = await supabase.auth.signInWithPassword({email,password:pass});
+    var res = await supabase.auth.signInWithPassword({email:email, password:pass});
     if(res.error) throw res.error;
   }catch(e){
     showToast('Error: '+e.message,'error');
   }
 }
 
-async function signupWithEmail(){
-  if(!supabase) return;
-  var email = document.getElementById('authEmail').value.trim();
-  var pass  = document.getElementById('authPass').value;
-  if(!email||pass.length<6){ showToast('Usa email valido y contraseña de al menos 6 caracteres','error'); return; }
+async function _sb_signupWithEmail(){
+  if(!supabase){ showToast('Servicio no disponible','error'); return; }
+  var emailEl = document.getElementById('vidaEmail') || document.getElementById('authEmail');
+  var passEl  = document.getElementById('vidaPass')  || document.getElementById('authPass');
+  var email = emailEl ? emailEl.value.trim() : '';
+  var pass  = passEl  ? passEl.value : '';
+  if(!email||pass.length<6){ showToast('Usa email valido y contrasena de al menos 6 caracteres','error'); return; }
   try{
-    var res = await supabase.auth.signUp({email,password:pass});
+    var res = await supabase.auth.signUp({email:email, password:pass});
     if(res.error) throw res.error;
     showToast('Cuenta creada! Revisa tu email para confirmar.','success');
   }catch(e){
@@ -9527,8 +9846,14 @@ async function signupWithEmail(){
   }
 }
 
+function toggleVidaEmailForm(){
+  var form = document.getElementById('vidaEmailForm');
+  if(form) form.style.display = form.style.display==='none'?'flex':'none';
+}
+
 function skipAuth(){
   localStorage.setItem('msAuthSkipped','1');
+  localStorage.setItem('msAuthDone','1');
   hideAuthScreen();
   initAppWithoutAuth();
 }
@@ -9542,6 +9867,7 @@ function initAppWithoutAuth(){
 async function onUserLoggedIn(user){
   currentUser = user;
   hideAuthScreen();
+  localStorage.setItem('msAuthDone','1');
   localStorage.removeItem('msAuthSkipped');
 
   // Load profile from Supabase
@@ -9613,7 +9939,7 @@ async function syncTasksToCloud(){
   }catch(e){ console.warn('Sync error:', e); }
 }
 
-async function signOut(){
+async function _sb_signOut(){
   if(supabase) await supabase.auth.signOut();
   currentUser = null;
   showToast('Sesion cerrada','info');
@@ -9621,6 +9947,16 @@ async function signOut(){
 
 // -- MI VIDA PAGE - render ------------------------------
 function updateVidaPage(){
+  // Force show login if no user
+  var _ls = document.getElementById('vidaLoginSection');
+  var _as = document.getElementById('vidaAccountSection');
+  if(!currentUser){
+    if(_ls) _ls.style.cssText = 'display:block !important;margin-bottom:16px;';
+    if(_as) _as.style.display = 'none';
+  } else {
+    if(_ls) _ls.style.display = 'none';
+    if(_as) _as.style.display = 'block';
+  }
   // User info
   var nameEl = document.getElementById('vidaUserName');
   var planEl = document.getElementById('vidaUserPlan');
@@ -9650,8 +9986,8 @@ function updateVidaPage(){
   var el2 = document.getElementById('vidaStatRacha');
   var el3 = document.getElementById('vidaStatKarma');
   if(el1) el1.textContent = completed;
-  if(el2) el2.textContent = (streak||0) + '\uD83D\uDD25';
-  if(el3) el3.textContent = karmaPoints || 0;
+  if(el2) el2.textContent = (typeof streak!=='undefined'?streak:0) + '\uD83D\uDD25';
+  if(el3) el3.textContent = (karmaData&&karmaData.score||0);
 
   // Heatmap
   buildVidaHeatmap();
@@ -9703,7 +10039,7 @@ function buildVidaAreas(){
     var div = document.createElement('div');
     div.className = 'vida-area-card';
     div.style.background = area.color;
-    div.onclick = function(){ navigateTo('life',4); };
+    div.onclick = function(){ activeLifeFilter=area.key; buildLifeDashboard(); navigateTo('life',4); };
     div.innerHTML =
       '<div class="vida-area-header">'+
         '<div class="vida-area-icon" style="background:'+area.color+'">'+area.icon+'</div>'+
