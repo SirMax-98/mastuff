@@ -152,6 +152,12 @@
 function initSupabase(){
   try{
     supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // Check for pending OAuth session
+    if(window._pendingSession && window._pendingSession.user){
+      onUserLoggedIn(window._pendingSession.user);
+      window._pendingSession = null;
+      return;
+    }
     supabase.auth.getSession().then(function(res){
       var session = res.data && res.data.session;
       if(session && session.user){
@@ -6690,7 +6696,34 @@ function renderLifeTaskPanel(key){
   hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
   var ttl = document.createElement('div');
   ttl.style.cssText = 'font-size:0.84rem;font-weight:700;color:var(--text);';
-  var areaTasks = tasks.filter(function(t){ return (t.lifeArea||'other')===key; });
+  // Get tasks for this area, deduplicate recurring ones
+  var allAreaTasks = tasks.filter(function(t){ return (t.lifeArea||'other')===key; });
+  
+  // Deduplicate: for recurring tasks, show only one entry (the most recent/relevant)
+  var seen = {};
+  var areaTasks = [];
+  allAreaTasks.forEach(function(t){
+    if(t.recur && t.recur !== 'none'){
+      // For recurring tasks, use name as key — show only once
+      var key2 = t.name.toLowerCase().trim();
+      if(!seen[key2]){
+        seen[key2] = true;
+        // Find the next upcoming instance or today's
+        var today = todayStr();
+        var upcoming = allAreaTasks.filter(function(x){
+          return x.name.toLowerCase().trim()===key2 && x.date >= today && !x.done;
+        });
+        var taskToShow = upcoming.length > 0 ? upcoming[0] : t;
+        // Add recur badge
+        var recurLabels = {daily:'Diaria', weekly:'Semanal', monthly:'Mensual', yearly:'Anual'};
+        taskToShow._recurLabel = recurLabels[t.recur] || t.recur;
+        areaTasks.push(taskToShow);
+      }
+    } else {
+      areaTasks.push(t);
+    }
+  });
+  
   ttl.textContent = area.icon+' '+area.name+' ('+areaTasks.length+' tareas)';
   var addBtn = document.createElement('button');
   addBtn.textContent = '+ Agregar';
@@ -6720,7 +6753,8 @@ function renderLifeTaskPanel(key){
     (function(tid,k){ chk.onclick = function(e){ e.stopPropagation(); toggleDone(e,tid); setTimeout(function(){ renderLifeTaskPanel(k); },120); }; })(t.id,key);
     var nm = document.createElement('span');
     nm.style.cssText = 'font-size:0.8rem;flex:1;color:var(--text);';
-    nm.textContent = (t.emoji||area.icon)+' '+t.name;
+    var recurBadge = t._recurLabel ? ' <span style="font-size:0.62rem;background:rgba(212,175,106,0.15);color:var(--gold);padding:1px 6px;border-radius:8px;margin-left:4px;">'+t._recurLabel+'</span>' : '';
+    nm.innerHTML = (t.emoji||area.icon)+' '+t.name + recurBadge;
     var dt = document.createElement('span');
     dt.style.cssText = 'font-size:0.67rem;color:var(--muted);';
     dt.textContent = t.date;
@@ -9843,6 +9877,29 @@ function skipAuth(){
   initAppWithoutAuth();
 }
 
+// DETECT OAUTH CALLBACK
+(function(){
+  var hash = window.location.hash;
+  if(hash && hash.includes('access_token')){
+    var params = {};
+    hash.slice(1).split('&').forEach(function(p){
+      var i=p.indexOf('='); if(i>0) params[p.slice(0,i)]=decodeURIComponent(p.slice(i+1));
+    });
+    if(params.access_token){
+      localStorage.setItem('sb-access-token', params.access_token);
+      history.replaceState({}, document.title, window.location.pathname);
+      fetch('https://lzlyxdwetwqmitqqfkpr.supabase.co/auth/v1/user',{
+        headers:{'apikey':'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-','Authorization':'Bearer '+params.access_token}
+      }).then(function(r){return r.json();}).then(function(user){
+        if(user && user.email){
+          window._pendingSession={access_token:params.access_token,user:user};
+          localStorage.setItem('sb-session',JSON.stringify(window._pendingSession));
+        }
+      }).catch(function(e){console.warn('OAuth callback:',e);});
+    }
+  }
+})();
+
 function initAppWithoutAuth(){
   currentUser = null;
   hideAuthScreen();
@@ -10017,7 +10074,17 @@ function buildVidaAreas(){
     {key:'other',    name:'Otros',       icon:'\uD83D\uDCCC', color:'rgba(168,189,212,0.08)', grad:'rgba(168,189,212,0.4)'},
   ];
   areas.forEach(function(area){
-    var areaTasks = tasks.filter(function(t){ return t.lifeArea===area.key; });
+    // Deduplicate recurring tasks
+    var allAreaTasks2 = tasks.filter(function(t){ return t.lifeArea===area.key; });
+    var seen2 = {};
+    var areaTasks = allAreaTasks2.filter(function(t){
+      if(t.recur && t.recur !== 'none'){
+        var k2 = t.name.toLowerCase().trim();
+        if(seen2[k2]) return false;
+        seen2[k2] = true;
+      }
+      return true;
+    });
     var done = areaTasks.filter(function(t){ return t.done; }).length;
     var total = areaTasks.length;
     var pct = total > 0 ? Math.round(done/total*100) : 0;
