@@ -2540,6 +2540,32 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 .heatmap-cell[data-level="2"]{background:rgba(212,175,106,0.5);}
 .heatmap-cell[data-level="3"]{background:rgba(212,175,106,0.75);}
 .heatmap-cell[data-level="4"]{background:var(--gold);}
+
+/* PAGES TAKE FULL WIDTH - sidebar is separate */
+.pages-wrapper{
+  position:relative !important;
+  overflow:hidden !important;
+  flex:1;
+}
+/* On desktop, pages respect the main layout */
+@media(min-width:769px){
+  .pages-wrapper{
+    margin-left:0;
+  }
+}
+/* Mi Vida page specific fixes */
+#page-life{
+  background:var(--bg);
+}
+#page-life .vida-header{
+  max-width:600px;
+}
+#page-life .page-card{
+  max-width:600px;
+}
+#page-life .vida-area-card{
+  max-width:600px;
+}
 </style>
 </head>
 <body style="padding-bottom:90px;">
@@ -4287,7 +4313,7 @@ window.onload=()=>{
   try{ initWidgetSystem(); }catch(e){}
   try{ initPremiumNav(); }catch(e){}
   try{ initPages(); }catch(e){}
-  try{ initSupabase(); }catch(e){ initAppWithoutAuth(); }
+  setTimeout(function(){ try{ initSupabase(); }catch(e){ console.warn('supabase:',e); } }, 100);
   // Auto-load AI motivation after DOM is fully ready
   setTimeout(()=>{
     try{
@@ -8784,10 +8810,13 @@ function initPages(){
     var topbar = document.querySelector('.topbar');
     var nav = document.getElementById('bottomNav');
     var wrapper = document.getElementById('pagesWrapper');
-    if(wrapper && topbar && nav){
-      var topH = topbar.offsetHeight || 56;
-      var navH = nav.offsetHeight || 90;
-      wrapper.style.height = (window.innerHeight - topH - navH) + 'px';
+    if(wrapper){
+      var topH = topbar ? topbar.offsetHeight : 56;
+      var navH = nav ? nav.offsetHeight : 80;
+      var h = window.innerHeight - topH - navH;
+      wrapper.style.height = h + 'px';
+      wrapper.style.position = 'relative';
+      wrapper.style.overflow = 'hidden';
     }
   }
   fixHeight();
@@ -9127,7 +9156,59 @@ function initPages(){
   </div>
 
   <!-- PAGE 5: MI VIDA -->
-  <div class="app-page" id="page-life" data-page="life">
+  <div class="app-page" id="page-life" data-page="life" style="padding:12px;">
+
+    <!-- LOGIN / ACCOUNT SECTION -->
+    <div id="vidaLoginSection" style="display:none;margin-bottom:16px;">
+      <div style="background:linear-gradient(135deg,rgba(212,175,106,0.1),rgba(26,58,107,0.15));border:1px solid rgba(212,175,106,0.25);border-radius:20px;padding:24px 20px;text-align:center;">
+        <div style="font-size:2.5rem;margin-bottom:10px;">🔐</div>
+        <div style="font-family:var(--font-head);font-size:1.1rem;font-weight:800;color:var(--text);margin-bottom:6px;">Crea tu cuenta</div>
+        <div style="font-size:0.78rem;color:var(--muted);line-height:1.6;margin-bottom:20px;">Sincroniza tus datos en la nube.<br>Accede desde cualquier dispositivo.</div>
+
+        <!-- Google button -->
+        <button onclick="loginWithGoogle()" id="vidaGoogleBtn"
+          style="width:100%;background:white;color:#1a1a1a;border:none;border-radius:12px;padding:13px 16px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:0.88rem;font-weight:700;cursor:pointer;margin-bottom:10px;min-height:48px;box-shadow:0 2px 12px rgba(0,0,0,0.3);transition:all 0.2s;">
+          <svg width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          Continuar con Google
+        </button>
+
+        <!-- Email form toggle -->
+        <button onclick="toggleVidaEmailForm()"
+          style="width:100%;background:rgba(212,175,106,0.08);border:1px solid rgba(212,175,106,0.2);color:var(--gold);border-radius:12px;padding:12px;font-size:0.82rem;font-weight:600;cursor:pointer;min-height:44px;margin-bottom:12px;">
+          ✉️ Continuar con email
+        </button>
+
+        <div id="vidaEmailForm" style="display:none;flex-direction:column;gap:8px;margin-bottom:12px;">
+          <input class="inp" type="email" id="vidaEmail" placeholder="tu@email.com" style="font-size:0.85rem;">
+          <input class="inp" type="password" id="vidaPass" placeholder="Contraseña (min 6 caracteres)" style="font-size:0.85rem;">
+          <div style="display:flex;gap:8px;">
+            <button onclick="loginWithEmail()" style="flex:1;background:linear-gradient(135deg,var(--gold),#b8924a);color:#060d1a;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:0.82rem;min-height:44px;">Entrar</button>
+            <button onclick="signupWithEmail()" style="flex:1;background:var(--s2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:11px;font-weight:600;cursor:pointer;font-size:0.82rem;min-height:44px;">Crear cuenta</button>
+          </div>
+        </div>
+
+        <div style="font-size:0.68rem;color:var(--muted);">Tus datos actuales se mantienen aunque no tengas cuenta</div>
+      </div>
+    </div>
+
+    <!-- LOGGED IN: ACCOUNT ACTIONS -->
+    <div id="vidaAccountSection" style="display:none;margin-bottom:12px;">
+      <div style="background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:1.2rem;">✓</div>
+          <div>
+            <div style="font-size:0.82rem;font-weight:700;color:var(--text);" id="vidaAccountEmail">cuenta@email.com</div>
+            <div style="font-size:0.68rem;color:var(--accent3);">Sincronizado con la nube</div>
+          </div>
+        </div>
+        <button onclick="signOut()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.72rem;min-height:36px;">Salir</button>
+      </div>
+    </div>
 
     <!-- USER PROFILE HEADER -->
     <div class="vida-header" id="vidaHeader">
@@ -9438,13 +9519,7 @@ function initSupabase(){
       if(session && session.user){
         onUserLoggedIn(session.user);
       } else {
-        // Check if user wants to skip auth
-        var skipped = localStorage.getItem('msAuthSkipped');
-        if(!skipped){
-          showAuthScreen();
-        } else {
-          initAppWithoutAuth();
-        }
+        initAppWithoutAuth();
       }
     });
     // Listen for auth changes
@@ -9480,12 +9555,19 @@ function hideAuthScreen(){
 async function loginWithGoogle(){
   if(!supabase) return;
   var btn = document.getElementById('googleLoginBtn');
-  if(btn) btn.textContent = 'Conectando...';
+  if(btn){
+    btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 48 48" style="animation:planSpin 1s linear infinite"><circle cx="24" cy="24" r="20" fill="none" stroke="#4285F4" stroke-width="4" stroke-dasharray="80 40"/></svg> Conectando con Google...';
+    btn.style.opacity = '0.8';
+  }
   try{
     var result = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.href
+        redirectTo: 'https://sirmax-98.github.io/mastuff/',
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
+        }
       }
     });
     if(result.error) throw result.error;
@@ -9501,12 +9583,14 @@ function toggleEmailForm(){
 }
 
 async function loginWithEmail(){
-  if(!supabase) return;
-  var email = document.getElementById('authEmail').value.trim();
-  var pass  = document.getElementById('authPass').value;
-  if(!email||!pass){ showToast('Completa email y contraseña','error'); return; }
+  if(!supabase){ showToast('Servicio no disponible','error'); return; }
+  var emailEl = document.getElementById('vidaEmail') || document.getElementById('authEmail');
+  var passEl  = document.getElementById('vidaPass')  || document.getElementById('authPass');
+  var email = emailEl ? emailEl.value.trim() : '';
+  var pass  = passEl  ? passEl.value : '';
+  if(!email||!pass){ showToast('Completa email y contrasena','error'); return; }
   try{
-    var res = await supabase.auth.signInWithPassword({email,password:pass});
+    var res = await supabase.auth.signInWithPassword({email:email, password:pass});
     if(res.error) throw res.error;
   }catch(e){
     showToast('Error: '+e.message,'error');
@@ -9514,12 +9598,14 @@ async function loginWithEmail(){
 }
 
 async function signupWithEmail(){
-  if(!supabase) return;
-  var email = document.getElementById('authEmail').value.trim();
-  var pass  = document.getElementById('authPass').value;
-  if(!email||pass.length<6){ showToast('Usa email valido y contraseña de al menos 6 caracteres','error'); return; }
+  if(!supabase){ showToast('Servicio no disponible','error'); return; }
+  var emailEl = document.getElementById('vidaEmail') || document.getElementById('authEmail');
+  var passEl  = document.getElementById('vidaPass')  || document.getElementById('authPass');
+  var email = emailEl ? emailEl.value.trim() : '';
+  var pass  = passEl  ? passEl.value : '';
+  if(!email||pass.length<6){ showToast('Usa email valido y contrasena de al menos 6 caracteres','error'); return; }
   try{
-    var res = await supabase.auth.signUp({email,password:pass});
+    var res = await supabase.auth.signUp({email:email, password:pass});
     if(res.error) throw res.error;
     showToast('Cuenta creada! Revisa tu email para confirmar.','success');
   }catch(e){
@@ -9527,8 +9613,14 @@ async function signupWithEmail(){
   }
 }
 
+function toggleVidaEmailForm(){
+  var form = document.getElementById('vidaEmailForm');
+  if(form) form.style.display = form.style.display==='none'?'flex':'none';
+}
+
 function skipAuth(){
   localStorage.setItem('msAuthSkipped','1');
+  localStorage.setItem('msAuthDone','1');
   hideAuthScreen();
   initAppWithoutAuth();
 }
@@ -9542,6 +9634,7 @@ function initAppWithoutAuth(){
 async function onUserLoggedIn(user){
   currentUser = user;
   hideAuthScreen();
+  localStorage.setItem('msAuthDone','1');
   localStorage.removeItem('msAuthSkipped');
 
   // Load profile from Supabase
@@ -9703,7 +9796,7 @@ function buildVidaAreas(){
     var div = document.createElement('div');
     div.className = 'vida-area-card';
     div.style.background = area.color;
-    div.onclick = function(){ navigateTo('life',4); };
+    div.onclick = function(){ activeLifeFilter=area.key; buildLifeDashboard(); navigateTo('life',4); };
     div.innerHTML =
       '<div class="vida-area-header">'+
         '<div class="vida-area-icon" style="background:'+area.color+'">'+area.icon+'</div>'+
