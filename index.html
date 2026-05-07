@@ -6,7 +6,6 @@
 // Minimal Supabase Auth Client - replaces full SDK
 // Only implements what MA STUFF needs: signInWithOAuth, signInWithPassword, signUp, signOut, getSession, onAuthStateChange
 
-    
 (function(global){
   'use strict';
 
@@ -4468,7 +4467,7 @@ window.onload=()=>{
   try{ initPages(); }catch(e){}
   setTimeout(function(){ try{ updateVidaPage(); }catch(e){}; }, 300);
   // Supabase is now inline - init directly
-  setTimeout(function(){ try{ initSupabase(); }catch(e){ console.warn('supabase:',e); } }, 200);
+  // initSupabase called after all scripts load (see bottom of page)
   // Auto-load AI motivation after DOM is fully ready
   setTimeout(()=>{
     try{
@@ -9740,7 +9739,11 @@ var currentUser = null;
 
 function initSupabase(){
   try{
-    if(!window.supabase){ throw new Error('Supabase SDK not loaded'); }
+    if(!window.supabase || !window.supabase.createClient){ 
+      console.warn('Supabase not ready, retrying...');
+      setTimeout(initSupabase, 500);
+      return;
+    }
     supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     // Check if already logged in
     supabase.auth.getSession().then(function(res){
@@ -10073,6 +10076,9 @@ function buildVidaLogros(){
   });
 }
 
+
+// Init Supabase now that everything is loaded
+try{ initSupabase(); }catch(e){ console.warn('supabase init:',e); }
 </script>
 
 <!-- AUTH SCREEN -->
