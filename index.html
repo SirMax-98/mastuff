@@ -4313,7 +4313,7 @@ window.onload=()=>{
   try{ initWidgetSystem(); }catch(e){}
   try{ initPremiumNav(); }catch(e){}
   try{ initPages(); }catch(e){}
-  setTimeout(function(){ try{ initSupabase(); }catch(e){ console.warn('supabase:',e); } }, 100);
+  setTimeout(function(){ try{ if(typeof initSupabase==='function') initSupabase(); }catch(e){ console.warn('supabase:',e); } }, 500);
   // Auto-load AI motivation after DOM is fully ready
   setTimeout(()=>{
     try{
@@ -5756,6 +5756,11 @@ function closeAIModal(){}
 function switchAITab(){}
 
 // Auto-generate daily summary on load if has tasks
+// Stubs - overridden by full Supabase implementation later
+if(typeof initSupabase === 'undefined') window.initSupabase = function(){ console.log('Supabase not yet loaded'); };
+if(typeof initAppWithoutAuth === 'undefined') window.initAppWithoutAuth = function(){ try{ updateVidaPage(); }catch(e){} };
+if(typeof updateVidaPage === 'undefined') window.updateVidaPage = function(){};
+
 window.addEventListener('load', ()=>{
   setTimeout(()=>{
     const {todayTasks} = getTaskContext();
