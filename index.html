@@ -9167,7 +9167,7 @@ function initPages(){
   <div class="app-page" id="page-life" data-page="life" style="padding:12px;">
 
     <!-- LOGIN / ACCOUNT SECTION -->
-    <div id="vidaLoginSection" style="display:block;margin-bottom:16px;">
+    <div id="vidaLoginSection" style="display:block !important;margin-bottom:16px;">
       <div style="background:linear-gradient(135deg,rgba(212,175,106,0.1),rgba(26,58,107,0.15));border:1px solid rgba(212,175,106,0.25);border-radius:20px;padding:24px 20px;text-align:center;">
         <div style="font-size:2.5rem;margin-bottom:10px;">🔐</div>
         <div style="font-family:var(--font-head);font-size:1.1rem;font-weight:800;color:var(--text);margin-bottom:6px;">Crea tu cuenta</div>
@@ -9722,6 +9722,16 @@ async function signOut(){
 
 // -- MI VIDA PAGE - render ------------------------------
 function updateVidaPage(){
+  // Force show login if no user
+  var _ls = document.getElementById('vidaLoginSection');
+  var _as = document.getElementById('vidaAccountSection');
+  if(!currentUser){
+    if(_ls) _ls.style.cssText = 'display:block !important;margin-bottom:16px;';
+    if(_as) _as.style.display = 'none';
+  } else {
+    if(_ls) _ls.style.display = 'none';
+    if(_as) _as.style.display = 'block';
+  }
   // User info
   var nameEl = document.getElementById('vidaUserName');
   var planEl = document.getElementById('vidaUserPlan');
