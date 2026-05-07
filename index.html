@@ -152,19 +152,37 @@
 function initSupabase(){
   try{
     supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    // Check for pending OAuth session (may still be loading from fetch)
-    function checkPendingSession(attempt){
-      if(window._pendingSession && window._pendingSession.user){
-        onUserLoggedIn(window._pendingSession.user);
-        window._pendingSession = null;
-        return true;
-      }
-      // Retry up to 5 times (fetch may still be loading)
-      if(attempt < 5) setTimeout(function(){ checkPendingSession(attempt+1); }, 400);
-      else initAppWithoutAuth();
-      return false;
+    // Check for OAuth token from redirect
+    var token = window._oauthToken || localStorage.getItem('sb-access-token');
+    if(token){
+      window._oauthToken = null;
+      // Fetch user with token
+      fetch('https://lzlyxdwetwqmitqqfkpr.supabase.co/auth/v1/user',{
+        headers:{
+          'apikey':'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-',
+          'Authorization':'Bearer '+token
+        }
+      }).then(function(r){ return r.json(); }).then(function(user){
+        if(user && user.email){
+          var session = {access_token:token, user:user, provider:'google'};
+          localStorage.setItem('sb-session', JSON.stringify(session));
+          onUserLoggedIn(user);
+        } else {
+          // Token invalid
+          localStorage.removeItem('sb-access-token');
+          localStorage.removeItem('sb-session');
+          initAppWithoutAuth();
+        }
+      }).catch(function(){ initAppWithoutAuth(); });
+      return;
     }
-    if(!checkPendingSession(0)) return;
+    // Check stored session
+    if(window._pendingSession && window._pendingSession.user){
+      onUserLoggedIn(window._pendingSession.user);
+      window._pendingSession = null;
+      return;
+    }
+    // Only call getSession if no token was found above
     supabase.auth.getSession().then(function(res){
       var session = res.data && res.data.session;
       if(session && session.user){
@@ -172,7 +190,7 @@ function initSupabase(){
       } else {
         initAppWithoutAuth();
       }
-    });
+    }).catch(function(){ initAppWithoutAuth(); });
     supabase.auth.onAuthStateChange(function(event, session){
       if(event === 'SIGNED_IN' && session){
         onUserLoggedIn(session.user);
@@ -9884,50 +9902,37 @@ function skipAuth(){
   initAppWithoutAuth();
 }
 
-// DETECT OAUTH CALLBACK — check hash, query params, and stored session
+// DETECT OAUTH CALLBACK
 (function(){
-  // Check URL hash for token
-  var src = window.location.hash || window.location.search;
+  var src = window.location.hash || window.location.search || '';
   var raw = src.replace(/^[#?]/,'');
   if(raw && raw.includes('access_token')){
     var params = {};
     raw.split('&').forEach(function(p){
-      var i=p.indexOf('='); if(i>0) params[p.slice(0,i)]=decodeURIComponent(p.slice(i+1));
+      var i=p.indexOf('=');
+      if(i>0) params[p.slice(0,i)] = decodeURIComponent(p.slice(i+1).replace(/\+/g,' '));
     });
     if(params.access_token){
+      // Clean URL immediately
       history.replaceState({}, document.title, window.location.pathname);
-      // Fetch user info
-      fetch('https://lzlyxdwetwqmitqqfkpr.supabase.co/auth/v1/user',{
-        headers:{
-          'apikey':'sb_publishable_CdfKBwvwvFqYNUEJdRQuGA_BHNE9YJ-',
-          'Authorization':'Bearer '+params.access_token
-        }
-      }).then(function(r){ return r.json(); }).then(function(user){
-        if(user && user.email){
-          var provider = params.provider_token ? 'google' : 'email';
-          var session = {
-            access_token: params.access_token,
-            refresh_token: params.refresh_token||'',
-            provider: provider,
-            user: user
-          };
-          window._pendingSession = session;
-          localStorage.setItem('sb-session', JSON.stringify(session));
-        }
-      }).catch(function(e){ console.warn('OAuth callback error:', e); });
+      // Store token
+      localStorage.setItem('sb-access-token', params.access_token);
+      if(params.refresh_token) localStorage.setItem('sb-refresh-token', params.refresh_token);
+      // Mark as google login
+      localStorage.setItem('msAuthProvider', 'google');
+      localStorage.setItem('msAuthDone', '1');
+      // Set flag for initSupabase
+      window._oauthToken = params.access_token;
     }
-  } else {
-    // Check localStorage for existing session
-    try{
-      var stored = localStorage.getItem('sb-session');
-      if(stored){
-        var sess = JSON.parse(stored);
-        if(sess && sess.user && sess.access_token){
-          window._pendingSession = sess;
-        }
-      }
-    }catch(e){}
   }
+  // Also load existing session
+  try{
+    var stored = localStorage.getItem('sb-session');
+    if(stored){
+      var sess = JSON.parse(stored);
+      if(sess && sess.user) window._pendingSession = sess;
+    }
+  }catch(e){}
 })();
 
 function initAppWithoutAuth(){
